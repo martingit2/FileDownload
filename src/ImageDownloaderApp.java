@@ -1,6 +1,10 @@
 // ImageDownloaderApp.java
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
+import javax.swing.table.AbstractTableModel;
+import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.TableCellRenderer;
+import javax.swing.table.TableColumn;
 import javax.swing.text.DefaultCaret;
 import java.awt.*;
 import java.awt.event.ActionEvent;
@@ -38,16 +42,16 @@ public class ImageDownloaderApp extends JFrame {
 
     private JTextField urlField;
     private JComboBox<String> categoryComboBox;
-    private JPanel fileTypeSelectionPanel; // Panel for JCheckBoxes
-    private JButton fetchButton, downloadButton;
+    // private JPanel fileTypeSelectionPanel; // Erstattes av JTable
+    private JButton fetchButton, downloadButton, selectAllButton, selectNoneButton;
     private JTextArea logArea;
     private JProgressBar progressBar;
     private JFileChooser directoryChooser;
-    private transient List<FileInfo> fetchedFiles;
+    private transient List<FileInfo> fetchedFilesList; // Liste som holder alle funnede filer
+    private JTable filesTable;
+    private FilesTableModel tableModel;
     private File saveDirectory;
 
-    // Definerer kategorier og deres tilknyttede filtyper
-    // Bruker LinkedHashMap for å bevare rekkefølgen i dropdown
     private static final Map<String, List<String>> CATEGORIZED_EXTENSIONS = new LinkedHashMap<>();
     static {
         CATEGORIZED_EXTENSIONS.put("Bilder", Arrays.asList(".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".tiff", ".ico"));
@@ -55,22 +59,19 @@ public class ImageDownloaderApp extends JFrame {
         CATEGORIZED_EXTENSIONS.put("Videoer", Arrays.asList(".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"));
         CATEGORIZED_EXTENSIONS.put("Lydfiler", Arrays.asList(".mp3", ".wav", ".ogg", ".aac", ".flac"));
         CATEGORIZED_EXTENSIONS.put("Arkiver", Arrays.asList(".zip", ".rar", ".tar", ".gz", ".7z"));
-        // "Alle Filer" vil bli håndtert spesielt, kanskje ved å lete etter alle lenker med kjente filtyper
-        // eller ved å ha en egen avhukingsboks for "Prøv å hente alle lenkede filer uansett type"
     }
-    private static final String ALL_FILES_CATEGORY = "Alle filtyper"; // En spesiell kategori
+    private static final String ALL_FILES_CATEGORY = "Alle filtyper";
 
-    // Enkel klasse for å holde på filinformasjon
-    private static class FileInfo {
+    // Klasse for filinformasjon, nå med 'selected' flagg for tabellen
+    protected static class FileInfo { // Endret til protected for tilgang fra indre klasse TableModel
         String url;
         String extension;
-        String detectedType; // f.eks. "Bilder", "Dokumenter"
-        boolean selected = true;
+        String detectedType;
+        boolean selected = true; // Standard er valgt
 
         FileInfo(String url, String extension) {
             this.url = url;
             this.extension = extension != null ? extension.toLowerCase() : "";
-            // Enkel logikk for å bestemme type basert på extension
             this.detectedType = categorizeExtension(this.extension);
         }
 
@@ -81,19 +82,118 @@ public class ImageDownloaderApp extends JFrame {
                     return entry.getKey();
                 }
             }
-            return "Annet"; // For filer som ikke matcher de forhåndsdefinerte kategoriene
+            return "Annet";
         }
 
         @Override
-        public String toString() {
+        public String toString() { // Brukes mindre nå, men greit å ha
             return url;
         }
     }
 
+    // TableModel for JTable
+    class FilesTableModel extends AbstractTableModel {
+        private final List<FileInfo> files;
+        private final String[] columnNames = {"Velg", "Fil-URL", "Type", "Filtype (.ext)"};
+
+        public FilesTableModel(List<FileInfo> files) {
+            this.files = files;
+        }
+
+        @Override
+        public int getRowCount() {
+            return files.size();
+        }
+
+        @Override
+        public int getColumnCount() {
+            return columnNames.length;
+        }
+
+        @Override
+        public String getColumnName(int column) {
+            return columnNames[column];
+        }
+
+        @Override
+        public Class<?> getColumnClass(int columnIndex) {
+            if (columnIndex == 0) {
+                return Boolean.class; // For sjekkboksen
+            }
+            return String.class;
+        }
+
+        @Override
+        public boolean isCellEditable(int rowIndex, int columnIndex) {
+            return columnIndex == 0; // Kun sjekkbokskolonnen er redigerbar
+        }
+
+        @Override
+        public Object getValueAt(int rowIndex, int columnIndex) {
+            FileInfo fileInfo = files.get(rowIndex);
+            switch (columnIndex) {
+                case 0: return fileInfo.selected;
+                case 1: return fileInfo.url;
+                case 2: return fileInfo.detectedType;
+                case 3: return fileInfo.extension;
+                default: return null;
+            }
+        }
+
+        @Override
+        public void setValueAt(Object aValue, int rowIndex, int columnIndex) {
+            if (columnIndex == 0 && aValue instanceof Boolean) {
+                files.get(rowIndex).selected = (Boolean) aValue;
+                fireTableCellUpdated(rowIndex, columnIndex);
+                updateDownloadButtonState(); // Oppdater nedlastingsknappens tilstand
+            }
+        }
+
+        public void selectAll(boolean select) {
+            for (FileInfo file : files) {
+                file.selected = select;
+            }
+            fireTableDataChanged();
+            updateDownloadButtonState();
+        }
+
+        public void setData(List<FileInfo> newFiles) {
+            this.files.clear();
+            this.files.addAll(newFiles);
+            filterAndSelectBasedOnCategory(); // Velg basert på kategori etter at data er satt
+            fireTableDataChanged();
+            updateDownloadButtonState();
+        }
+
+        // Filtrer og velg basert på kategori
+        public void filterAndSelectBasedOnCategory() {
+            String selectedCategory = (String) categoryComboBox.getSelectedItem();
+            if (selectedCategory == null || files.isEmpty()) return;
+
+            List<String> extensionsInCurrentCategory = null;
+            if (!ALL_FILES_CATEGORY.equals(selectedCategory)) {
+                extensionsInCurrentCategory = CATEGORIZED_EXTENSIONS.get(selectedCategory);
+            }
+
+            for (FileInfo file : files) {
+                if (ALL_FILES_CATEGORY.equals(selectedCategory)) {
+                    file.selected = true; // Velg alle hvis "Alle filtyper"
+                } else if (extensionsInCurrentCategory != null) {
+                    file.selected = extensionsInCurrentCategory.contains(file.extension);
+                } else {
+                    file.selected = false; // Hvis kategorien ikke finnes eller ingen filtyper for den
+                }
+            }
+            fireTableDataChanged(); // Oppdater tabellvisningen
+            updateDownloadButtonState();
+        }
+    }
+
+
     public ImageDownloaderApp() {
-        setTitle("Avansert Filnedlaster");
+        setTitle("Avansert Filnedlaster Pro");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setSize(850, 700); // Økt størrelse litt
+        setSize(900, 750);
         setLocationRelativeTo(null);
         setLayout(new BorderLayout(10, 10));
 
@@ -103,9 +203,9 @@ public class ImageDownloaderApp extends JFrame {
             System.err.println("Kunne ikke sette system look and feel: " + e.getMessage());
         }
 
-        fetchedFiles = new ArrayList<>();
+        fetchedFilesList = new ArrayList<>(); // Initialiser listen som table model vil bruke
+        tableModel = new FilesTableModel(fetchedFilesList); // Gi referansen til listen
         initComponents();
-        updateFileTypeCheckBoxes(); // Initial oppdatering av sjekkbokser
     }
 
     private void initComponents() {
@@ -116,7 +216,7 @@ public class ImageDownloaderApp extends JFrame {
         String placeholderText = "Skriv inn URL her...";
         urlField = new JTextField(placeholderText);
         urlField.setForeground(Color.GRAY);
-        urlField.addFocusListener(new FocusAdapter() {
+        urlField.addFocusListener(new FocusAdapter() { /* ... (som før) ... */
             @Override
             public void focusGained(FocusEvent e) {
                 if (urlField.getText().equals(placeholderText)) {
@@ -135,141 +235,141 @@ public class ImageDownloaderApp extends JFrame {
         urlField.setToolTipText("Nettsideadressen du vil hente filer fra");
         topInputPanel.add(urlField, BorderLayout.CENTER);
 
+        JPanel categoryAndFetchPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5,0));
         categoryComboBox = new JComboBox<>(CATEGORIZED_EXTENSIONS.keySet().toArray(new String[0]));
-        categoryComboBox.addItem(ALL_FILES_CATEGORY); // Legg til "Alle filtyper"
-        categoryComboBox.setSelectedItem("Bilder"); // Standardvalg
-        categoryComboBox.setToolTipText("Velg filkategori du ønsker å fokusere på");
+        categoryComboBox.addItem(ALL_FILES_CATEGORY);
+        categoryComboBox.setSelectedItem("Bilder");
+        categoryComboBox.setToolTipText("Velg filkategori for forhåndsfiltrering");
         categoryComboBox.addActionListener(e -> {
-            updateFileTypeCheckBoxes();
-            updateButtonTexts();
+            tableModel.filterAndSelectBasedOnCategory(); // Oppdater valg i tabellen
+            updateButtonTexts(); // Oppdater knappetekster
         });
-        topInputPanel.add(categoryComboBox, BorderLayout.EAST);
+        categoryAndFetchPanel.add(categoryComboBox);
 
+        fetchButton = new JButton("Analyser URL");
+        fetchButton.setToolTipText("Hent og vis fillenker fra URL");
+        fetchButton.addActionListener(this::fetchFileLinksAction);
+        categoryAndFetchPanel.add(fetchButton);
+
+        topInputPanel.add(categoryAndFetchPanel, BorderLayout.EAST);
         add(topInputPanel, BorderLayout.NORTH);
 
+        // ----- Senterpanel: Fil-tabell og velg-knapper -----
+        JPanel centerPanel = new JPanel(new BorderLayout(10,10));
+        centerPanel.setBorder(new EmptyBorder(0, 10, 0, 10));
 
-        // ----- Senterpanel: Filtypevalg og Hent-knapp plassert over loggen -----
-        JPanel centerContainerPanel = new JPanel(new BorderLayout(10,10));
-        centerContainerPanel.setBorder(new EmptyBorder(0, 10, 0, 10));
+        filesTable = new JTable(tableModel);
+        filesTable.setAutoCreateRowSorter(true); // Aktiver sortering på kolonner
+        setupTableColumns();
+
+        JScrollPane tableScrollPane = new JScrollPane(filesTable);
+        tableScrollPane.setBorder(BorderFactory.createTitledBorder("Funnet Filer"));
+        centerPanel.add(tableScrollPane, BorderLayout.CENTER);
+
+        JPanel selectionButtonsPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        selectAllButton = new JButton("Velg Alle");
+        selectAllButton.addActionListener(e -> tableModel.selectAll(true));
+        selectAllButton.setEnabled(false);
+        selectionButtonsPanel.add(selectAllButton);
+
+        selectNoneButton = new JButton("Velg Ingen");
+        selectNoneButton.addActionListener(e -> tableModel.selectAll(false));
+        selectNoneButton.setEnabled(false);
+        selectionButtonsPanel.add(selectNoneButton);
+
+        centerPanel.add(selectionButtonsPanel, BorderLayout.SOUTH);
+        add(centerPanel, BorderLayout.CENTER);
 
 
-        // ----- Filtypevalgpanel (dynamisk) -----
-        fileTypeSelectionPanel = new JPanel(); // Bruker FlowLayout som standard, kan endres
-        fileTypeSelectionPanel.setLayout(new BoxLayout(fileTypeSelectionPanel, BoxLayout.Y_AXIS));
-        JScrollPane fileTypeScrollPane = new JScrollPane(fileTypeSelectionPanel);
-        fileTypeScrollPane.setBorder(BorderFactory.createTitledBorder("Velg Filformater"));
-        fileTypeScrollPane.setPreferredSize(new Dimension(200, 150)); // Gi den en foretrukket størrelse
+        // ----- Bunnpanel: Logg, Nedlastingsknapp og Progressbar -----
+        JPanel bottomOuterPanel = new JPanel(new BorderLayout(10,5));
+        bottomOuterPanel.setBorder(new EmptyBorder(5,10,10,10));
 
-
-        // Panel for filtypevalg og hent-knapp
-        JPanel controlsPanel = new JPanel(new BorderLayout(5,10));
-        controlsPanel.add(fileTypeScrollPane, BorderLayout.CENTER);
-
-        fetchButton = new JButton("Hent Bilder"); // Starttekst, oppdateres dynamisk
-        fetchButton.setToolTipText("Hent fillenker fra URL basert på valgte typer");
-        fetchButton.addActionListener(this::fetchFileLinksAction);
-        controlsPanel.add(fetchButton, BorderLayout.SOUTH);
-
-        centerContainerPanel.add(controlsPanel, BorderLayout.WEST);
-
-
-        // ----- Loggpanel -----
-        logArea = new JTextArea();
+        // Loggpanel (mindre)
+        logArea = new JTextArea(8, 0); // Høyde på 8 rader
         logArea.setEditable(false);
         logArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
         DefaultCaret caret = (DefaultCaret)logArea.getCaret();
         caret.setUpdatePolicy(DefaultCaret.ALWAYS_UPDATE);
-        JScrollPane scrollPane = new JScrollPane(logArea);
-        scrollPane.setBorder(BorderFactory.createTitledBorder("Logg"));
-        centerContainerPanel.add(scrollPane, BorderLayout.CENTER);
+        JScrollPane logScrollPane = new JScrollPane(logArea);
+        logScrollPane.setBorder(BorderFactory.createTitledBorder("Logg"));
+        bottomOuterPanel.add(logScrollPane, BorderLayout.CENTER);
 
-        add(centerContainerPanel, BorderLayout.CENTER);
+        // Panel for nedlastingselementer
+        JPanel downloadControlsPanel = new JPanel(new BorderLayout(10,5));
 
-
-        // ----- Bunnpanel: Nedlastingsknapp og Progressbar -----
-        JPanel bottomPanel = new JPanel(new BorderLayout(10, 10));
-        bottomPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
-
-        downloadButton = new JButton("Last Ned Valgte Filer"); // Starttekst
+        downloadButton = new JButton("Last Ned Valgte Filer");
         downloadButton.setEnabled(false);
-        downloadButton.setToolTipText("Start nedlasting av valgte filer til valgt mappe");
+        downloadButton.setToolTipText("Start nedlasting av valgte filer");
         downloadButton.addActionListener(this::downloadFilesAction);
-        bottomPanel.add(downloadButton, BorderLayout.EAST);
+        downloadControlsPanel.add(downloadButton, BorderLayout.EAST);
 
         progressBar = new JProgressBar(0, 100);
         progressBar.setStringPainted(true);
         progressBar.setValue(0);
-        bottomPanel.add(progressBar, BorderLayout.CENTER);
+        downloadControlsPanel.add(progressBar, BorderLayout.CENTER);
 
-        add(bottomPanel, BorderLayout.SOUTH);
+        bottomOuterPanel.add(downloadControlsPanel, BorderLayout.SOUTH);
+        add(bottomOuterPanel, BorderLayout.SOUTH);
+
 
         directoryChooser = new JFileChooser();
         directoryChooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
         directoryChooser.setDialogTitle("Velg Mappe for Nedlasting");
 
         updateButtonTexts(); // Initialiser knappetekster
+        updateDownloadButtonState(); // Initialiser nedlastingsknappens tilstand
     }
 
-    private void updateFileTypeCheckBoxes() {
-        fileTypeSelectionPanel.removeAll();
-        String selectedCategory = (String) categoryComboBox.getSelectedItem();
+    private void setupTableColumns() {
+        // Sett bredde for sjekkbokskolonnen
+        TableColumn selectColumn = filesTable.getColumnModel().getColumn(0);
+        selectColumn.setPreferredWidth(50);
+        selectColumn.setMaxWidth(70);
+        selectColumn.setMinWidth(40);
 
-        if (selectedCategory == null) return;
+        // Gjør URL-kolonnen bredere
+        TableColumn urlColumn = filesTable.getColumnModel().getColumn(1);
+        urlColumn.setPreferredWidth(450);
 
-        List<String> extensions;
-        if (ALL_FILES_CATEGORY.equals(selectedCategory)) {
-            // For "Alle filtyper", kan vi enten vise alle kjente extensions,
-            // eller ha en "spesiell" boks. La oss vise alle for nå, men deaktivert.
-            // Eller enda bedre, vi kan ha en enkelt boks "Hent alle detekterte filer".
-            JCheckBox allKnownCheckBox = new JCheckBox("Alle kjente filtyper", true);
-            allKnownCheckBox.setToolTipText("Prøver å hente alle filer med kjente filendelser fra kategoriene");
-            // Man kan også velge å ikke ha sjekkbokser i det hele tatt for "Alle filtyper"
-            // og heller stole på en mer generell søkelogikk.
-            // For nå:
-            // fileTypeSelectionPanel.add(new JLabel("Henter alle gjenkjennelige filtyper."));
-            // Eller, vi kan vise alle extensions fra alle kategorier, og la brukeren velge:
-            Set<String> allExts = new HashSet<>();
-            CATEGORIZED_EXTENSIONS.values().forEach(allExts::addAll);
-            extensions = new ArrayList<>(allExts);
-            extensions.sort(String.CASE_INSENSITIVE_ORDER);
+        TableColumn typeColumn = filesTable.getColumnModel().getColumn(2);
+        typeColumn.setPreferredWidth(100);
 
-        } else {
-            extensions = CATEGORIZED_EXTENSIONS.get(selectedCategory);
-        }
+        TableColumn extColumn = filesTable.getColumnModel().getColumn(3);
+        extColumn.setPreferredWidth(100);
 
-        if (extensions != null) {
-            for (String ext : extensions) {
-                JCheckBox checkBox = new JCheckBox(ext, true); // Standard er valgt
-                fileTypeSelectionPanel.add(checkBox);
+        // Custom renderer for å sentrere sjekkboksen (valgfritt, men penere)
+        DefaultTableCellRenderer centerRenderer = new DefaultTableCellRenderer();
+        centerRenderer.setHorizontalAlignment(JLabel.CENTER);
+        // filesTable.getColumnModel().getColumn(0).setCellRenderer(centerRenderer); // Overstyrer default for Boolean
+    }
+
+    private void updateDownloadButtonState() {
+        boolean anySelected = false;
+        for (FileInfo fi : fetchedFilesList) {
+            if (fi.selected) {
+                anySelected = true;
+                break;
             }
         }
-
-        fileTypeSelectionPanel.revalidate();
-        fileTypeSelectionPanel.repaint();
+        downloadButton.setEnabled(anySelected && !fetchedFilesList.isEmpty());
+        selectAllButton.setEnabled(!fetchedFilesList.isEmpty());
+        selectNoneButton.setEnabled(!fetchedFilesList.isEmpty());
     }
+
 
     private void updateButtonTexts() {
         String selectedCategory = (String) categoryComboBox.getSelectedItem();
-        if (selectedCategory == null) selectedCategory = "Filer"; // Fallback
+        if (selectedCategory == null) selectedCategory = "Filer";
+
+        fetchButton.setText("Analyser URL"); // Endret fast tekst
 
         if (ALL_FILES_CATEGORY.equals(selectedCategory)) {
-            fetchButton.setText("Hent Alle Filer");
-            downloadButton.setText("Last Ned Alle Funnet Filer");
+            downloadButton.setText("Last Ned Valgte");
         } else {
-            // Gjør første bokstav stor, resten små, f.eks. "Bilder" -> "Bilder"
             String categoryDisplay = selectedCategory.substring(0, 1).toUpperCase() + selectedCategory.substring(1).toLowerCase();
-            if (!categoryDisplay.endsWith("er") && !categoryDisplay.endsWith("a") && !categoryDisplay.endsWith("n")) { // Enkel pluralisering
-                if (categoryDisplay.endsWith("r")) { // f.eks. Bilder
-                    // behold som det er
-                } else if (categoryDisplay.endsWith("kument")) { // Dokument -> Dokumenter
-                    categoryDisplay += "er";
-                }
-                else {
-                    categoryDisplay += "er"; // Bilder, Videoer, Lydfiler
-                }
-            }
-            fetchButton.setText("Hent " + categoryDisplay);
-            downloadButton.setText("Last Ned Valgte " + categoryDisplay);
+            // Forenklet logikk for knappetekst, da tabellen nå styrer utvalget.
+            downloadButton.setText("Last Ned Valgte");
         }
     }
 
@@ -278,24 +378,20 @@ public class ImageDownloaderApp extends JFrame {
     }
 
     private String getFileExtensionFromUrl(String urlString) {
+        // ... (samme som før)
         try {
-            // Først, prøv å parse URL for å håndtere query parametere etc.
             URL url = new URL(urlString);
             String path = url.getPath();
 
             if (path != null && !path.isEmpty()) {
-                // Hent den siste delen av stien
                 String fileNameCandidate = path.substring(path.lastIndexOf('/') + 1);
                 if (fileNameCandidate.contains(".")) {
                     String ext = fileNameCandidate.substring(fileNameCandidate.lastIndexOf('.')).toLowerCase();
-                    // Enkel validering av at filtypen er "fornuftig" (ikke for lang, ingen rare tegn)
                     if (ext.length() > 1 && ext.length() <= 6 && ext.matches("\\.[a-z0-9]+")) {
                         return ext;
                     }
                 }
             }
-
-            // Hvis ingen filtype i path, sjekk query for 'format=' (vanlig på CDN)
             String query = url.getQuery();
             if (query != null) {
                 Pattern pattern = Pattern.compile("[?&]format=([^&]+)");
@@ -307,23 +403,15 @@ public class ImageDownloaderApp extends JFrame {
                     }
                 }
             }
-
-            // Fallback: Hvis URL-strengen (ikke bare path) inneholder en "." før en eventuell query-string
-            // Dette er mindre pålitelig, men kan fange noen tilfeller.
             String urlStrNoQuery = urlString.split("\\?")[0];
             if (urlStrNoQuery.contains(".")) {
                 String potentialExt = urlStrNoQuery.substring(urlStrNoQuery.lastIndexOf('.')).toLowerCase();
                 if (potentialExt.length() > 1 && potentialExt.length() <= 6 && potentialExt.matches("\\.[a-z0-9]+")) {
-                    // Sjekk om dette er en kjent filtype for å unngå f.eks. ".com" fra domenet
                     boolean isKnown = CATEGORIZED_EXTENSIONS.values().stream().anyMatch(list -> list.contains(potentialExt));
                     if(isKnown) return potentialExt;
                 }
             }
-
         } catch (MalformedURLException e) {
-            // Kan skje hvis input ikke er en gyldig URL, men Jsoup bør fange det meste før.
-            // Eller hvis en relativ URL blir forsøkt parset uten base.
-            // For enkelhetens skyld, prøv en råere string-split hvis URL-parsing feiler:
             if (urlString.contains(".")) {
                 String potentialExt = urlString.substring(urlString.lastIndexOf('.')).toLowerCase();
                 if (potentialExt.length() > 1 && potentialExt.length() <= 6 && potentialExt.matches("\\.[a-z0-9]+")) {
@@ -332,9 +420,8 @@ public class ImageDownloaderApp extends JFrame {
                 }
             }
         }
-        return null; // Ingen filtype funnet
+        return null;
     }
-
 
     private void fetchFileLinksAction(ActionEvent e) {
         String urlText = urlField.getText().trim();
@@ -342,7 +429,6 @@ public class ImageDownloaderApp extends JFrame {
             JOptionPane.showMessageDialog(this, "URL kan ikke være tom.", "Feil", JOptionPane.ERROR_MESSAGE);
             return;
         }
-
         try {
             new URL(urlText);
         } catch (MalformedURLException ex) {
@@ -350,61 +436,66 @@ public class ImageDownloaderApp extends JFrame {
             return;
         }
 
-        String selectedCategory = (String) categoryComboBox.getSelectedItem();
-        log("Starter henting av " + (ALL_FILES_CATEGORY.equals(selectedCategory) ? "alle filer" : selectedCategory.toLowerCase()) + " fra: " + urlText);
+        log("Starter analyse av URL: " + urlText);
         fetchButton.setEnabled(false);
-        downloadButton.setEnabled(false);
+        downloadButton.setEnabled(false); // Deaktiveres mens vi henter nytt
+        selectAllButton.setEnabled(false);
+        selectNoneButton.setEnabled(false);
         progressBar.setValue(0);
-        fetchedFiles.clear();
+        // fetchedFilesList blir oppdatert via tableModel.setData() i SwingWorker's done()
 
         SwingWorker<List<FileInfo>, String> worker = new SwingWorker<>() {
             @Override
             protected List<FileInfo> doInBackground() throws Exception {
-                List<FileInfo> foundFiles = new ArrayList<>();
+                List<FileInfo> foundOnPage = new ArrayList<>(); // Midlertidig liste for denne hentingen
                 Set<String> uniqueFileUrls = new HashSet<>();
 
                 publish("Kobler til " + urlText + "...");
                 Document doc = Jsoup.connect(urlText)
                         .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-                        .timeout(15000) // Økt timeout litt
+                        .timeout(15000)
                         .get();
                 publish("Koblet til. Analyserer HTML...");
 
-                // Hent fra <img>, <source>, <a> tags, og potensielt <video>, <audio> etc.
-                // Vi må generalisere dette for å finne lenker som *kan* være filer.
-                Elements links = doc.select("img[src], source[srcset], a[href], video[src], audio[src], track[src], embed[src], object[data]");
-                // Man kan også vurdere å se etter linker i <link href="..."> (f.eks. for CSS-bakgrunnsbilder, fonter)
+                Elements links = doc.select("img[src], source[srcset], a[href], video[src], audio[src], track[src], embed[src], object[data], link[href]");
+                // La til link[href] for å fange f.eks. CSS eller fonter om ønskelig.
 
                 for (Element link : links) {
                     String url = "";
+                    String tagName = link.tagName().toLowerCase();
+
                     if (link.hasAttr("src")) url = link.absUrl("src");
-                    else if (link.hasAttr("srcset")) url = link.absUrl("srcset").split(",")[0].trim().split("\\s+")[0]; // Ta første fra srcset
+                    else if (link.hasAttr("srcset")) url = link.absUrl("srcset").split(",")[0].trim().split("\\s+")[0];
                     else if (link.hasAttr("href")) url = link.absUrl("href");
                     else if (link.hasAttr("data")) url = link.absUrl("data");
 
                     if (url.isEmpty() || url.startsWith("mailto:") || url.startsWith("tel:") || url.startsWith("javascript:")) continue;
-                    if (url.contains("#")) { // Fjern anker/fragment
+                    if (url.contains("#")) {
                         url = url.substring(0, url.indexOf('#'));
                     }
 
-
                     String extension = getFileExtensionFromUrl(url);
 
-                    // Hvis "Alle filtyper" er valgt, og vi har en extension, legg til
-                    // Ellers, sjekk mot valgte extensions i den valgte kategorien.
-                    // (Denne filtreringen kan også skje senere, før nedlasting)
+                    // For <link rel="stylesheet" href="style.css">, er href="style.css"
+                    // For <link rel="icon" href="favicon.ico">
+                    // Vurder om alle `link[href]` skal med, eller kun de med kjente filtyper.
+                    boolean потенциальноФайл = (extension != null && !extension.isEmpty());
+                    if ("link".equals(tagName)) {
+                        String rel = link.attr("rel");
+                        // Bare ta med link-elementer som sannsynligvis er filer (f.eks. stylesheet, icon)
+                        if (!("stylesheet".equalsIgnoreCase(rel) || "icon".equalsIgnoreCase(rel) || "shortcut icon".equalsIgnoreCase(rel) || "apple-touch-icon".equalsIgnoreCase(rel) || "preload".equalsIgnoreCase(rel) || "manifest".equalsIgnoreCase(rel))) {
+                            if(!потенциальноФайл) continue; // Hopp over andre link-typer med mindre de har en klar filtype
+                        }
+                    }
 
-                    if (extension != null && !extension.isEmpty() && uniqueFileUrls.add(url)) {
+
+                    if (потенциальноФайл && uniqueFileUrls.add(url)) {
                         FileInfo fileInfo = new FileInfo(url, extension);
-                        foundFiles.add(fileInfo);
-                        publish("Fant potensiell fil: " + url + " (type: " + fileInfo.detectedType + ", ext: " + fileInfo.extension +")");
-                    } else if (extension == null && ALL_FILES_CATEGORY.equals(selectedCategory)) {
-                        // Hvis "Alle filtyper" og ingen klar extension, men vi vil være "grådige"
-                        // Kan legge til logikk her for å prøve å laste ned og sjekke Content-Type senere.
-                        // For nå, ignorer de uten extension med mindre vi har en veldig god grunn.
+                        foundOnPage.add(fileInfo);
+                        publish("Fant: " + url);
                     }
                 }
-                return foundFiles;
+                return foundOnPage;
             }
 
             @Override
@@ -417,167 +508,64 @@ public class ImageDownloaderApp extends JFrame {
             @Override
             protected void done() {
                 try {
-                    fetchedFiles = get();
-                    log("Fant " + fetchedFiles.size() + " unike fillenker med gjenkjennelige filtyper.");
-                    if (!fetchedFiles.isEmpty()) {
-                        downloadButton.setEnabled(true);
-                        // Her kan du oppdatere sjekkboksene for å vise antall funnet per type,
-                        // eller dynamisk legge til sjekkbokser for uventede filtyper hvis "Alle filtyper" var valgt.
-                        updateDynamicCheckboxesWithCounts();
-                    } else {
-                        log("Ingen filer funnet som matcher kriteriene.");
+                    List<FileInfo> result = get();
+                    tableModel.setData(result); // Oppdater tabellen med de nye filene
+                    log("Analyse fullført. Fant " + result.size() + " unike potensielle filer.");
+                    if (result.isEmpty()) {
+                        log("Ingen filer funnet.");
                     }
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
-                    log("Henting avbrutt: " + ex.getMessage());
+                    log("Analyse avbrutt: " + ex.getMessage());
                 } catch (ExecutionException ex) {
                     Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
-                    log("Feil under henting: " + cause.getClass().getSimpleName() + " - " + cause.getMessage());
-                    if (cause.getCause() != null) log("  Underliggende årsak: " + cause.getCause().getMessage());
-                    cause.printStackTrace(); // For mer detaljert feilsøking i konsollen
-                    JOptionPane.showMessageDialog(ImageDownloaderApp.this, "Feil under henting: " + cause.getMessage(), "Feil", JOptionPane.ERROR_MESSAGE);
+                    log("Feil under analyse: " + cause.getClass().getSimpleName() + " - " + cause.getMessage());
+                    cause.printStackTrace();
+                    JOptionPane.showMessageDialog(ImageDownloaderApp.this, "Feil under analyse: " + cause.getMessage(), "Feil", JOptionPane.ERROR_MESSAGE);
                 } finally {
                     fetchButton.setEnabled(true);
+                    updateDownloadButtonState(); // Oppdateres basert på tabellens innhold nå
                 }
             }
         };
         worker.execute();
     }
 
-    private void updateDynamicCheckboxesWithCounts() {
-        // Denne metoden bør oppdatere sjekkboksene i fileTypeSelectionPanel
-        // for å vise antall funnet filer av hver type.
-        // Hvis "Alle filtyper" var valgt, kan den også legge til nye sjekkbokser for filtyper
-        // som ble funnet, men ikke var i de forhåndsdefinerte kategoriene.
-
-        String selectedCategoryFilter = (String) categoryComboBox.getSelectedItem();
-        fileTypeSelectionPanel.removeAll(); // Start på nytt
-
-        Map<String, Long> counts = new HashMap<>();
-        Map<String, String> extensionToCategoryMap = new HashMap<>(); // For å vite hvilken kategori en extension tilhører
-
-        // Bygg map for raskt oppslag av kategori per extension
-        for (Map.Entry<String, List<String>> catEntry : CATEGORIZED_EXTENSIONS.entrySet()) {
-            for (String ext : catEntry.getValue()) {
-                extensionToCategoryMap.put(ext, catEntry.getKey());
-            }
-        }
-
-        // Tell forekomster
-        for (FileInfo fi : fetchedFiles) {
-            counts.put(fi.extension, counts.getOrDefault(fi.extension, 0L) + 1);
-        }
-
-        // Filtrer og vis sjekkbokser
-        List<String> extensionsToShow = new ArrayList<>();
-        if (ALL_FILES_CATEGORY.equals(selectedCategoryFilter)) {
-            extensionsToShow.addAll(counts.keySet()); // Vis alle funnet extensions
-        } else {
-            List<String> categoryExtensions = CATEGORIZED_EXTENSIONS.get(selectedCategoryFilter);
-            if (categoryExtensions != null) {
-                for (String ext : categoryExtensions) {
-                    if (counts.containsKey(ext)) { // Bare vis hvis vi faktisk fant noen
-                        extensionsToShow.add(ext);
-                    }
-                }
-                // Legg også til de som er funnet, men ikke var i listen, hvis de tilhører kategorien.
-                // Dette er litt overlappende med "Alle filtyper", men kan være nyttig.
-                // For nå, hold det enkelt: kun de definerte for kategorien.
-            }
-        }
-        extensionsToShow.sort(String.CASE_INSENSITIVE_ORDER);
-
-        if (extensionsToShow.isEmpty() && !fetchedFiles.isEmpty()){
-            fileTypeSelectionPanel.add(new JLabel("Ingen filer av valgt(e) type(r) funnet."));
-            fileTypeSelectionPanel.add(new JLabel("Men " + fetchedFiles.size() + " andre filer ble detektert."));
-            fileTypeSelectionPanel.add(new JLabel("Prøv kategorien '" + ALL_FILES_CATEGORY + "'."));
-        } else {
-            for (String ext : extensionsToShow) {
-                JCheckBox checkBox = new JCheckBox(ext + " (" + counts.get(ext) + ")", true);
-                fileTypeSelectionPanel.add(checkBox);
-            }
-        }
-
-        fileTypeSelectionPanel.revalidate();
-        fileTypeSelectionPanel.repaint();
-    }
-
-
     private void downloadFilesAction(ActionEvent e) {
-        if (fetchedFiles.isEmpty()) {
-            log("Ingen filer er hentet og klar for nedlasting.");
+        List<FileInfo> filesToDownload = new ArrayList<>();
+        for (FileInfo fi : fetchedFilesList) { // Gå gjennom hovedlisten som tabellen bruker
+            if (fi.selected) {
+                filesToDownload.add(fi);
+            }
+        }
+
+        if (filesToDownload.isEmpty()) {
+            log("Ingen filer er valgt for nedlasting.");
+            JOptionPane.showMessageDialog(this, "Ingen filer er valgt for nedlasting.", "Advarsel", JOptionPane.WARNING_MESSAGE);
             return;
         }
 
         if (directoryChooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
             saveDirectory = directoryChooser.getSelectedFile();
             if (!saveDirectory.exists()) {
-                if (!saveDirectory.mkdirs()) {
+                if (!saveDirectory.mkdirs()) { /* ... (feilhåndtering som før) ... */
                     log("Kunne ikke opprette mappe: " + saveDirectory.getAbsolutePath());
                     JOptionPane.showMessageDialog(this, "Kunne ikke opprette nedlastingsmappe.", "Feil", JOptionPane.ERROR_MESSAGE);
                     return;
                 }
             }
             log("Valgt mappe for nedlasting: " + saveDirectory.getAbsolutePath());
-
-            Set<String> selectedExtensions = new HashSet<>();
-            for (Component comp : fileTypeSelectionPanel.getComponents()) {
-                if (comp instanceof JCheckBox) {
-                    JCheckBox checkBox = (JCheckBox) comp;
-                    if (checkBox.isSelected()) {
-                        // Teksten er "ext (count)", så vi må trekke ut "ext"
-                        String text = checkBox.getText();
-                        String ext = text.substring(0, text.indexOf(" (")).trim();
-                        selectedExtensions.add(ext);
-                    }
-                }
-            }
-
-            String currentCategory = (String) categoryComboBox.getSelectedItem();
-            boolean downloadAllDetected = false;
-            if (ALL_FILES_CATEGORY.equals(currentCategory)) {
-                // Hvis "Alle filtyper" er valgt, og det er sjekkbokser (som er default nå), bruk dem.
-                // Hvis vi hadde en spesiell "last ned alt" uten sjekkbokser for "Alle filtyper",
-                // ville vi satt downloadAllDetected = true her.
-                // Med nåværende logikk, vil selectedExtensions inneholde de avhukede.
-                if (selectedExtensions.isEmpty() && !fetchedFiles.isEmpty()) {
-                    // Hvis ingen sjekkbokser er valgt under "Alle filtyper", men vi har funnet filer,
-                    // kan vi anta at brukeren vil ha alle som ble listet.
-                    // Dette avhenger av designvalg. For nå, hvis ingenting er sjekket, lastes ingenting ned.
-                }
-            }
-
-
-            if (selectedExtensions.isEmpty() && !fetchedFiles.isEmpty()) {
-                JOptionPane.showMessageDialog(this, "Ingen filformater er valgt for nedlasting.", "Advarsel", JOptionPane.WARNING_MESSAGE);
-                log("Ingen filformater valgt. Avbryter nedlasting.");
-                return;
-            }
-
-            List<FileInfo> filesToDownload = new ArrayList<>();
-            for (FileInfo fi : fetchedFiles) {
-                if (selectedExtensions.contains(fi.extension)) {
-                    filesToDownload.add(fi);
-                }
-            }
-
-            if (filesToDownload.isEmpty()){
-                log("Ingen filer samsvarte med valgte formater for nedlasting.");
-                if(!fetchedFiles.isEmpty()) {
-                    log("Det ble funnet " + fetchedFiles.size() + " filer totalt, men ingen av de valgte typene.");
-                }
-                return;
-            }
-
-
             log("Starter nedlasting av " + filesToDownload.size() + " filer...");
+
             downloadButton.setEnabled(false);
             fetchButton.setEnabled(false);
+            selectAllButton.setEnabled(false);
+            selectNoneButton.setEnabled(false);
             progressBar.setValue(0);
             progressBar.setMaximum(filesToDownload.size());
 
-
-            SwingWorker<Integer, Object[]> downloadWorker = new SwingWorker<>() { // Object[] for å sende både melding og progress
+            SwingWorker<Integer, Object[]> downloadWorker = new SwingWorker<>() {
+                // ... (doInBackground og process som før, bruk filesToDownload)
                 private int successfulDownloads = 0;
 
                 @Override
@@ -591,15 +579,14 @@ public class ImageDownloaderApp extends JFrame {
                             URL fileUrl = new URL(fileInfo.url);
                             URLConnection connection = fileUrl.openConnection();
                             connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
-                            connection.setConnectTimeout(10000); // 10s
-                            connection.setReadTimeout(30000); // 30s
+                            connection.setConnectTimeout(10000);
+                            connection.setReadTimeout(30000);
 
                             String fileName = Paths.get(fileUrl.getPath()).getFileName().toString();
                             if (fileName.isEmpty() || !fileName.contains(".")) {
                                 fileName = "downloaded_file_" + System.currentTimeMillis() + (fileInfo.extension != null ? fileInfo.extension : ".tmp");
                             }
                             fileName = fileName.replaceAll("[^a-zA-Z0-9._-]", "_").replaceAll("_+", "_");
-
 
                             File outputFile = new File(saveDirectory, fileName);
                             int fileSuffix = 1;
@@ -609,23 +596,18 @@ public class ImageDownloaderApp extends JFrame {
                                 outputFile = new File(saveDirectory, baseName + "_" + fileSuffix++ + extension);
                             }
 
-                            long totalBytes = connection.getContentLengthLong(); // For mer nøyaktig progress
-                            long downloadedBytes = 0;
-
                             try (InputStream in = connection.getInputStream();
                                  FileOutputStream out = new FileOutputStream(outputFile)) {
-                                byte[] buffer = new byte[8192]; // Større buffer
+                                byte[] buffer = new byte[8192];
                                 int bytesRead;
                                 while ((bytesRead = in.read(buffer)) != -1) {
                                     if (isCancelled()) {
                                         out.close();
-                                        Files.deleteIfExists(outputFile.toPath()); // Slett ufullstendig fil
+                                        Files.deleteIfExists(outputFile.toPath());
                                         publish(new Object[]{"Nedlasting avbrutt for: " + outputFile.getName(), currentProgress});
                                         throw new InterruptedException("Download cancelled by user");
                                     }
                                     out.write(buffer, 0, bytesRead);
-                                    downloadedBytes += bytesRead;
-                                    // Kan legge til sub-progress her hvis ønskelig (f.eks. for store filer)
                                 }
                             }
                             successfulDownloads++;
@@ -633,12 +615,10 @@ public class ImageDownloaderApp extends JFrame {
                         } catch (IOException ex) {
                             publish(new Object[]{"Feil ved nedlasting av " + fileInfo.url + ": " + ex.getMessage(), currentProgress + 1});
                         } catch (InterruptedException ex) {
-                            // Håndtert i done()
                             Thread.currentThread().interrupt();
                             break;
                         }
                         currentProgress++;
-                        // setProgress(currentProgress); // SwingWorker's egen progress for JProgressBar
                     }
                     return successfulDownloads;
                 }
@@ -662,32 +642,19 @@ public class ImageDownloaderApp extends JFrame {
                     } catch (InterruptedException ex) {
                         Thread.currentThread().interrupt();
                         log("Nedlasting avbrutt av bruker.");
-                        JOptionPane.showMessageDialog(ImageDownloaderApp.this, "Nedlasting avbrutt.", "Avbrutt", JOptionPane.WARNING_MESSAGE);
                     } catch (ExecutionException ex) {
                         log("Feil under nedlasting: " + ex.getCause().getMessage());
-                        JOptionPane.showMessageDialog(ImageDownloaderApp.this, "En feil oppstod under nedlasting: " + ex.getCause().getMessage(), "Feil", JOptionPane.ERROR_MESSAGE);
                     } finally {
-                        downloadButton.setEnabled(true);
-                        fetchButton.setEnabled(true);
-                        progressBar.setValue(progressBar.getMaximum());
+                        fetchButton.setEnabled(true); // Re-enable fetch button
+                        updateDownloadButtonState(); // Re-evaluerer basert på tabell
                     }
                 }
             };
-
-            // Koble SwingWorker's progress til JProgressBar (hvis du bruker setProgress internt)
-            // downloadWorker.addPropertyChangeListener(evt -> {
-            //     if ("progress".equals(evt.getPropertyName())) {
-            //         progressBar.setValue((Integer) evt.getNewValue());
-            //     }
-            // });
-
             downloadWorker.execute();
-
         } else {
             log("Nedlasting kansellert av bruker (valgte ikke mappe).");
         }
     }
-
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
